@@ -1,0 +1,281 @@
+# Azure DevOps Pipeline for Terraform Deployment with Akamai Configuration
+trigger:
+  branches:
+    include:
+      - main
+      - master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- group: 'Akamai-Secret'
+- group: 'AWS-S3-bucket'
+
+
+stages:
+  - stage: Prepare
+    displayName: 'Prepare Environment'
+    jobs:
+      - job: PrepareTemplate
+        displayName: 'Read input.yaml and Update terraform.auto.tfvars'
+        steps:
+          - checkout: self
+            persistCredentials: true  # Important: This allows git operations          
+          - task: PowerShell@2
+            displayName: 'Read input.yaml and Update terraform.auto.tfvars'
+            inputs:
+              targetType: 'inline'
+              script: |
+                # Install PowerShell YAML module if needed
+                if (!(Get-Module -ListAvailable -Name powershell-yaml)) {
+                    Install-Module -Name powershell-yaml -Force -Scope CurrentUser
+                }
+                Import-Module powershell-yaml
+                
+                # Read input.yaml
+                $inputConfig = Get-Content -Path "input.yaml" -Raw | ConvertFrom-Yaml
+                
+                # Extract values from input.yaml
+                $cpCodeName = $inputConfig.cp_code_name
+                $originHostname = $inputConfig.origin_hostname
+                $propertyName = $inputConfig.property_name
+                $hostnames = $inputConfig.hostnames
+                
+                # Create or update terraform.auto.tfvars
+                $tfvarsPath = "terraform/terraform.auto.tfvars"
+                
+                # Format hostnames as HCL list
+                $hostnamesHCL = '["' + ($hostnames -join '", "') + '"]'
+                
+                # Read the whole file into an array of lines
+                $lines = Get-Content -Path $tfvarsPath
+
+                # Update specific keys
+                $lines = $lines -replace '^cp_code_name\s*=.*', "cp_code_name    = `"$cpCodeName`""
+                $lines = $lines -replace '^origin_hostname\s*=.*', "origin_hostname = `"$originHostname`""
+                $lines = $lines -replace '^property_name\s*=.*', "property_name   = `"$propertyName`""
+                $lines = $lines -replace '^hostnames\s*=.*', "hostnames       = $hostnamesHCL"
+                
+                # Write back updated lines
+                $lines | Set-Content -Path $tfvarsPath
+                
+                Write-Host "Updated terraform.auto.tfvars with:"
+                Get-Content $tfvarsPath
+              
+
+                # Path to your main.tf
+                $mainTfPath = "terraform/main.tf"
+
+                # Read all lines
+                $content = Get-Content -Path $mainTfPath
+
+                # Replace the line containing 'key = "...'
+                $replacement = "key    = `"property1/$propertyName.tfstate`""
+                $content = $content -replace 'key\s*=\s*".*"', $replacement  
+                #$content = $content -replace 'key\s*=\s*".*"', "key    = \"property1/$propertyName.tfstate\""
+                #$content = $content -replace 'key\s*=\s*".*"', 'key    = "property1/$propertyName.tfstate"'
+
+                # Write back to file (overwrite)
+                Set-Content -Path $mainTfPath -Value $content
+
+                Write-Host "Updated backend.tfstate key in main.tf to 'property1/$propertyName.tfstate'"
+
+          - task: Bash@3
+            displayName: 'Commit and Push Updated Files to Current Repo'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(Build.SourcesDirectory)'
+              script: |
+                echo "🔧 Configuring Git..."
+                git config user.email "deepakjd2004@gmail.com"
+                git config user.name "Azure DevOps Pipeline"
+                
+                echo "📂 Current directory contents:"
+                ls -la
+                
+                echo "📂 Terraform directory contents:"
+                ls -la terraform/ || echo "Terraform directory not found"
+                
+                echo "🔍 Checking git status..."
+                git status
+                
+                echo "➕ Adding terraform directory..."
+                git add terraform/
+                
+                #echo "🔍 Checking staged changes..."
+                #git status --staged
+                
+                # Check if there are any staged changes
+                if git diff --cached --quiet; then
+                    echo "ℹ️ No changes detected in terraform directory - skipping commit"
+                else
+                    echo "💾 Committing changes..."
+                    git commit -m "Update terraform configuration from pipeline - Build $(Build.BuildNumber)"
+                    
+                    echo "🚀 Pushing changes to $(Build.SourceBranchName)..."
+                    git push origin HEAD:$(Build.SourceBranchName)
+                    
+                    echo "✅ Successfully updated terraform directory in current repository"
+                fi
+      
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Prepared Template'
+            inputs:
+              targetPath: 'terraform'
+              artifact: 'terraform-template'
+              publishLocation: 'pipeline'
+
+  - stage: Validate
+    displayName: 'Validate Terraform'
+    dependsOn: Prepare
+    jobs:
+      - job: TerraformValidate
+        displayName: 'Terraform Validate'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Template'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-template'
+              targetPath: '$(Pipeline.Workspace)/terraform-template'
+          
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: 'latest'
+          
+          - task: Bash@3
+            displayName: 'Terraform Init and Validate'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(Pipeline.Workspace)/terraform-template'
+              script: |
+                echo "Current working directory: $(pwd)"
+                echo "Listing contents:"
+                ls -al
+                export AWS_ACCESS_KEY_ID=$(AWS_ACCESS_KEY_ID)
+                export AWS_SECRET_ACCESS_KEY=$(AWS_SECRET_ACCESS_KEY)
+                terraform init
+                terraform validate
+              
+
+  - stage: Plan
+    displayName: 'Plan Terraform'
+    dependsOn: Validate
+    jobs:
+      - job: TerraformPlan
+        displayName: 'Terraform Plan'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Template'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-template'
+              targetPath: '$(Pipeline.Workspace)/terraform-template'
+          
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: 'latest'
+          
+          - task: Bash@3
+            displayName: 'Configure Akamai EdgeRC'
+            inputs:
+              targetType: 'inline'
+              script: |
+                # Create .edgerc file with Akamai credentials
+                cat > ~/.edgerc <<EOF
+                [default]
+                client_secret = $(CLIENT_SECRET)
+                host = $(HOST)
+                access_token = $(ACCESS_TOKEN)
+                client_token = $(CLIENT_TOKEN)
+                account_key = $(ACCOUNT_SWITCH_KEY)
+                EOF
+                
+                chmod 600 ~/.edgerc
+                echo "EdgeRC file created successfully"
+          
+          - task: Bash@3
+            displayName: 'Terraform Init and Plan'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(Pipeline.Workspace)/terraform-template'
+              script: |
+                # Export AWS credentials
+                export AWS_ACCESS_KEY_ID=$(AWS_ACCESS_KEY_ID)
+                export AWS_SECRET_ACCESS_KEY=$(AWS_SECRET_ACCESS_KEY)
+                
+                terraform init
+                terraform plan -out=tfplan
+          
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Terraform Plan'
+            inputs:
+              targetPath: '$(Pipeline.Workspace)/terraform-template/tfplan'
+              artifact: 'terraform-plan'
+              publishLocation: 'pipeline'
+
+  - stage: Apply
+    displayName: 'Apply Terraform'
+    dependsOn: Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: TerraformApply
+        displayName: 'Terraform Apply'
+        environment: 'production'  # Create this environment in Azure DevOps for approval gates
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Template'
+                  inputs:
+                    buildType: 'current'
+                    artifactName: 'terraform-template'
+                    targetPath: '$(Pipeline.Workspace)/terraform-template'
+                
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Terraform Plan'
+                  inputs:
+                    buildType: 'current'
+                    artifactName: 'terraform-plan'
+                    targetPath: '$(Pipeline.Workspace)/terraform-template/tfplan'
+                
+                - task: TerraformInstaller@0
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: 'latest'
+                
+                - task: Bash@3
+                  displayName: 'Configure Akamai EdgeRC'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      # Create .edgerc file with Akamai credentials
+                      cat > ~/.edgerc <<EOF
+                      [default]
+                      client_secret = $(CLIENT_SECRET)
+                      host = $(HOST)
+                      access_token = $(ACCESS_TOKEN)
+                      client_token = $(CLIENT_TOKEN)
+                      account_key = $(ACCOUNT_SWITCH_KEY)
+                      EOF
+                      
+                      chmod 600 ~/.edgerc
+                      echo "EdgeRC file created successfully"
+                
+                - task: Bash@3
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    targetType: 'inline'
+                    workingDirectory: '$(Pipeline.Workspace)/terraform-template'
+                    script: |
+                      # Export AWS credentials
+                      export AWS_ACCESS_KEY_ID=$(AWS_ACCESS_KEY_ID)
+                      export AWS_SECRET_ACCESS_KEY=$(AWS_SECRET_ACCESS_KEY)
+                      
+                      terraform init
+                      terraform apply -auto-approve
