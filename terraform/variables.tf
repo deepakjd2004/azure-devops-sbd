@@ -201,3 +201,60 @@ variable "ip_behavior" {
     error_message = "ERROR: Valid types are IPV4, IPV6_COMPLIANCE or IPV6_PERFORMANCE."
   }
 }
+
+
+## ----------------------------------------------------------------------------
+## Domain Validation
+## ----------------------------------------------------------------------------
+
+variable "dns_zone" {
+  description = <<-EOD
+    DNS zone name for automatic DNS record creation (e.g., "example.com").
+    If provided, Terraform will automatically create required DNS records for domain validation.
+    Leave empty to manually create DNS records.
+  EOD
+  type        = string
+  default     = ""
+}
+
+variable "enable_domain_validation" {
+  description = <<-EOD
+    Enable domain validation before activation. Required for new domains on Akamai network.
+    Set to false to skip domain validation (for existing validated domains).
+  EOD
+  type        = bool
+  default     = true
+}
+
+variable "domain_validation_scope" {
+  description = <<-EOD
+    Validation scope for domains. Options:
+    - HOST: Validates only the exact hostname
+    - WILDCARD: Validates one subdomain level (*.example.com)
+    - DOMAIN: Validates all hostnames under the domain
+  EOD
+  type        = string
+  default     = "HOST"
+
+  validation {
+    condition     = length(regexall("^(HOST|WILDCARD|DOMAIN)$", var.domain_validation_scope)) > 0
+    error_message = "ERROR: Valid types are HOST, WILDCARD, or DOMAIN."
+  }
+}
+
+variable "domain_validation_method" {
+  description = <<-EOD
+    Domain validation method. Options:
+    - DNS_CNAME: Add CNAME record to DNS
+    - DNS_TXT: Add TXT record to DNS
+    - HTTP: Place file on web server (only for HOST scope)
+    Leave empty for automatic validation method selection.
+  EOD
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.domain_validation_method == "" || length(regexall("^(DNS_CNAME|DNS_TXT|HTTP)$", var.domain_validation_method)) > 0
+    error_message = "ERROR: Valid types are DNS_CNAME, DNS_TXT, HTTP, or empty string for automatic."
+  }
+}

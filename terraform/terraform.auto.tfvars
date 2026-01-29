@@ -18,3 +18,14 @@ activate_to_staging    = true
 activate_to_production = true
 enhanced_tls = true
 secure_by_default = true
+
+# Domain Validation
+# Enable domain validation for new domains (required as of Jan 2026)
+enable_domain_validation  = true
+domain_validation_scope   = "HOST"      # Options: HOST, WILDCARD, DOMAIN
+domain_validation_method  = "DNS_CNAME" # Options: DNS_CNAME, DNS_TXT, HTTP (empty for auto)
+
+# DNS Zone for automatic record creation
+# If your DNS is managed by Akamai Edge DNS, provide the zone name here
+# Leave empty ("") if DNS is managed externally or for manual DNS record creation
+dns_zone                  = ""          # Example: "example.com"

@@ -53,12 +53,111 @@ resource "akamai_edge_hostname" "my_edge_hostname" {
   ip_behavior   = var.ip_behavior
 }
 
+
 resource "akamai_cp_code" "cp_code" {
   product_id  = var.product_id
   contract_id = data.akamai_contract.contract.id
   group_id    = data.akamai_contract.contract.group_id
   name        = var.cp_code_name
 }
+
+# Domain Validation Resources
+# Required to validate domain ownership before activation
+resource "akamai_property_domainownership_domains" "domains" {
+  count = var.enable_domain_validation ? 1 : 0
+
+  domains = [
+    for hostname in var.hostnames : {
+      domain_name      = hostname
+      validation_scope = var.domain_validation_scope
+    }
+  ]
+
+  lifecycle {
+    ignore_changes = [
+      # Challenge data changes frequently, ignore to prevent unnecessary updates
+      domains,
+    ]
+  }
+}
+
+# Local helper to extract zone from hostname
+locals {
+  # Extract DNS zone from hostnames if not explicitly provided
+  # Takes last 2 parts of hostname (e.g., api.staging.example.com -> example.com)
+  auto_dns_zone = var.dns_zone != "" ? var.dns_zone : (
+    length(var.hostnames) > 0 ? (
+      length(split(".", var.hostnames[0])) >= 2 ?
+        join(".", slice(split(".", var.hostnames[0]), length(split(".", var.hostnames[0])) - 2, length(split(".", var.hostnames[0])))) :
+        var.hostnames[0]
+    ) : ""
+  )
+  
+  # Create a map of hostname to domain validation data for easier access
+  domain_validation_map = var.enable_domain_validation && length(akamai_property_domainownership_domains.domains) > 0 ? {
+    for idx, domain in akamai_property_domainownership_domains.domains[0].domains :
+    domain.domain_name => domain
+  } : {}
+}
+
+# Automatic DNS CNAME Record Creation for Domain Validation
+# Creates _acme-challenge CNAME records for DNS_CNAME validation method
+resource "akamai_dns_record" "domain_validation_cname" {
+  for_each = var.enable_domain_validation && local.auto_dns_zone != "" && (var.domain_validation_method == "DNS_CNAME" || var.domain_validation_method == "") ? toset(var.hostnames) : []
+
+  zone       = local.auto_dns_zone
+  name       = "_acme-challenge.${each.value}"
+  recordtype = "CNAME"
+  ttl        = 60
+  
+  # Extract target from validation challenge data
+  target = [
+    local.domain_validation_map[each.value].validation_challenge.cname_record.target
+  ]
+
+  depends_on = [
+    akamai_property_domainownership_domains.domains
+  ]
+}
+
+# Automatic DNS TXT Record Creation for Domain Validation
+# Creates _akamai-{scope}-challenge TXT records for DNS_TXT validation method
+resource "akamai_dns_record" "domain_validation_txt" {
+  for_each = var.enable_domain_validation && local.auto_dns_zone != "" && var.domain_validation_method == "DNS_TXT" ? toset(var.hostnames) : []
+
+  zone       = local.auto_dns_zone
+  name       = "_akamai-${lower(var.domain_validation_scope)}-challenge.${each.value}"
+  recordtype = "TXT"
+  ttl        = 60
+  
+  # Extract token from validation challenge data
+  target = [
+    local.domain_validation_map[each.value].validation_challenge.txt_record.value
+  ]
+
+  depends_on = [
+    akamai_property_domainownership_domains.domains
+  ]
+}
+
+# Domain Validation - triggers actual validation after DNS/HTTP setup
+resource "akamai_property_domainownership_validation" "validation" {
+  count = var.enable_domain_validation ? 1 : 0
+
+  domains = [
+    for hostname in var.hostnames : {
+      domain_name       = hostname
+      validation_scope  = var.domain_validation_scope
+      validation_method = var.domain_validation_method != "" ? var.domain_validation_method : null
+    }
+  ]
+
+  depends_on = [
+    akamai_property_domainownership_domains.domains,
+    akamai_dns_record.domain_validation_cname
+  ]
+}
+
 
 
 resource "akamai_property" "this" {
@@ -107,6 +206,9 @@ resource "akamai_property_activation" "my_property_activation_staging" {
     ]
   }
   
+  depends_on = [
+    akamai_property_domainownership_validation.validation
+  ]
 }
 
 # NOTE: Be careful when removing this resource as you can disable traffic
@@ -130,6 +232,7 @@ resource "akamai_property_activation" "production" {
   }
   depends_on = [
     akamai_property_activation.my_property_activation_staging,
-    akamai_edge_hostname.my_edge_hostname
+    akamai_edge_hostname.my_edge_hostname,
+    akamai_property_domainownership_validation.validation
   ]
 }

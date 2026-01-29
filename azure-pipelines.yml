@@ -88,7 +88,7 @@ stages:
               workingDirectory: '$(Build.SourcesDirectory)'
               script: |
                 echo "🔧 Configuring Git..."
-                git config user.email "deepakjd2004@gmail.com"
+                git config user.email "john.doe@gmail.com"
                 git config user.name "Azure DevOps Pipeline"
                 
                 echo "📂 Current directory contents:"

@@ -1,6 +1,26 @@
-cp_code_name: "dj-02aep-tf-demo.com"
-origin_hostname: "origin.dj-02sep-demo.com"
-property_name: "dj-02sep-demo.com"
+# Akamai CDN Property Configuration
+# This file is used by Azure DevOps pipeline to configure Terraform
+
+# CP Code Name - Used for traffic reporting and billing
+cp_code_name: "demo3.online"
+
+# Origin Server Hostname - Where Akamai fetches content
+origin_hostname: "origin.demo3.online"
+
+# Property Name - Unique identifier for this CDN configuration
+property_name: "demo3.online"
+
+# Hostnames - List of domains/subdomains to be served via Akamai CDN
+# IMPORTANT: As of Jan 2026, these domains MUST be validated before activation
+# You will need to add DNS records (TXT or CNAME) for each hostname
+# See DOMAIN_VALIDATION_GUIDE.md for detailed instructions
 hostnames:
-  - "dj-02sep-demo.com"
-  - "www.dj-02sep-demo.com"
+  - "demo3.online"
+  - "www.demo3.online"
+
+# After pipeline runs 'terraform plan', check output for validation challenge data
+# Example DNS TXT record needed:
+#   Name:  _akamai-host-challenge.-demo3..online
+#   Type:  TXT  
+#   Value: token=<provided-by-terraform>
+#   TTL:   3600
