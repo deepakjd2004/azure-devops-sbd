@@ -213,10 +213,9 @@ resource "akamai_property_activation" "my_property_activation_staging" {
 
 # NOTE: Be careful when removing this resource as you can disable traffic
 resource "akamai_property_activation" "production" {
-  count       = var.activate_to_production ? 1 : 0
-  network     = "PRODUCTION"
   property_id = akamai_property.this.id
-  version     = akamai_property.this.latest_version
+  version = var.activate_to_production ? akamai_property.this.latest_version : akamai_property.this.production_version
+  network     = "PRODUCTION"
   auto_acknowledge_rule_warnings = true
   note        = var.activation_notes
   contact     = [var.email]
